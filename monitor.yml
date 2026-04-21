@@ -1,0 +1,41 @@
+name: Shiksha College Monitor
+
+on:
+  # Daily run at 8:00 AM IST (02:30 UTC)
+  schedule:
+    - cron: "30 2 * * *"
+
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright Chromium
+        run: playwright install chromium --with-deps
+
+      - name: Run monitor
+        env:
+          SPREADSHEET_ID:          ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          TELEGRAM_BOT_TOKEN:      ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:        ${{ secrets.TELEGRAM_CHAT_ID }}
+          TEAMS_WEBHOOK_URL:       ${{ secrets.TEAMS_WEBHOOK_URL }}
+          SCRAPE_DELAY_SECONDS:    "4"
+          SEND_DAILY_SUMMARY:      "true"
+        run: python main.py
