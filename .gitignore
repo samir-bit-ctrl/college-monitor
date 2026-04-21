@@ -1,4 +1,5 @@
 .env
 credentials.json
-howto.txt
+howto
 README.md
+_pycache
