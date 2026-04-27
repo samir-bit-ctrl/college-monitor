@@ -32,10 +32,12 @@ async def new_stealth_context(browser):
 
 
 async def load_page(page, url: str, retries: int = 2):
+    import os as _os
+    wait_ms = 10000 if _os.getenv("HEADLESS","false").lower() == "true" else 6000
     for attempt in range(retries):
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=90000)
-            await page.wait_for_timeout(6000)
+            await page.wait_for_timeout(wait_ms)
             return
         except Exception as e:
             if attempt < retries - 1:
@@ -156,13 +158,25 @@ async def scrape_ranking_table(page, url: str) -> list[dict]:
 # ─────────────────────────────────────────────
 
 async def scrape_rank_publisher_table(page, url: str) -> list[dict]:
-    """Page already loaded by scrape_ranking_table — no reload needed."""
+    """
+    Scrape the Rank publisher & Category list.
+    Tries multiple strategies to handle different page layouts.
+    Waits for entries to appear before extracting.
+    """
     if not url:
         return []
     rows = []
     try:
+        # Wait up to 10s for at least one .bc4a0d entry to appear
+        try:
+            await page.wait_for_selector(".bc4a0d", timeout=10000)
+        except Exception:
+            pass  # proceed anyway, will try JS extraction
+
         raw = await page.evaluate("""() => {
             const results = [];
+
+            // Strategy 1: confirmed class names from debug
             document.querySelectorAll('.bc4a0d').forEach(wrapper => {
                 const categoryEl  = wrapper.querySelector('.f1495c');
                 const publisherEl = wrapper.querySelector('.d8ca5d');
@@ -182,10 +196,58 @@ async def scrape_rank_publisher_table(page, url: str) -> list[dict]:
                     rank:      rank
                 });
             });
+
+            if (results.length > 0) return results;
+
+            // Strategy 2: find by "Rank publisher & Category" header, 
+            // then walk sibling rows
+            const headers = Array.from(document.querySelectorAll('span, div, p'))
+                .filter(el => el.innerText?.trim().toLowerCase().includes('rank publisher'));
+
+            for (const header of headers) {
+                // Walk up to find the container section
+                let container = header.closest('section, article, div[class]');
+                if (!container) continue;
+
+                // Find all rows with a rank-like pattern (#number)
+                const rankEls = container.querySelectorAll('*');
+                for (const el of rankEls) {
+                    if (el.childElementCount > 0) continue;
+                    const text = el.innerText?.trim();
+                    if (!text || !/^#\d+$/.test(text)) continue;
+
+                    // Found a rank element — find its row container
+                    const row = el.closest('[class]');
+                    if (!row) continue;
+
+                    // Extract all text nodes from the row
+                    const allText = Array.from(row.querySelectorAll('*'))
+                        .filter(n => n.childElementCount === 0 && n.innerText?.trim())
+                        .map(n => n.innerText.trim());
+
+                    if (allText.length >= 2) {
+                        const rank = text.replace('#', '');
+                        // First meaningful text = category, second = publisher+year
+                        const pubRaw = allText.find(t => t !== text && !t.includes('Best') && !t.includes('Among')) || '';
+                        const parts = pubRaw.split(',');
+                        results.push({
+                            category:  allText[0] !== text ? allText[0] : allText[1],
+                            publisher: parts[0]?.trim() || pubRaw,
+                            year:      parts[1]?.trim() || '',
+                            rank:      rank
+                        });
+                    }
+                }
+                if (results.length > 0) break;
+            }
+
             return results;
         }""")
+
         print(f"    Rank publisher entries: {len(raw)}")
         for entry in raw:
+            if not entry.get("category"):
+                continue
             rows.append({
                 "Category":   entry.get("category", ""),
                 "Publisher":  entry.get("publisher", ""),
