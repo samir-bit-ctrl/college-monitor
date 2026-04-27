@@ -31,9 +31,18 @@ async def new_stealth_context(browser):
     return context
 
 
-async def load_page(page, url: str):
-    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    await page.wait_for_timeout(6000)
+async def load_page(page, url: str, retries: int = 2):
+    for attempt in range(retries):
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=90000)
+            await page.wait_for_timeout(6000)
+            return
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"    [Retry {attempt+1}] {e}")
+                await asyncio.sleep(5)
+            else:
+                raise
 
 
 def normalize(val: str) -> str:
@@ -213,9 +222,14 @@ async def scrape_college(college: dict) -> dict:
         return result
 
     async with async_playwright() as p:
+        headless = os.getenv("HEADLESS", "false").lower() == "true"
         browser = await p.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled"]
+            headless=headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ]
         )
         context = await new_stealth_context(browser)
         page = await context.new_page()

@@ -13,6 +13,12 @@ def _placement_row_key(row: dict) -> str:
 def _ranking_row_key(row: dict) -> str:
     return row.get("Category", str(list(row.values())[0]) if row else "")
 
+def _rank_publisher_row_key(row: dict) -> str:
+    cat = row.get("Category", "").strip()
+    pub = row.get("Publisher", "").strip()
+    yr  = row.get("Year", "").strip()
+    return f"{cat}||{pub}||{yr}"
+
 
 def _summarise_row(row: dict, silo: str) -> str:
     """Turn a row dict into a compact human-readable string."""
@@ -44,7 +50,12 @@ def detect_changes(college_name: str,
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def get_row_key(row):
-        return _placement_row_key(row) if silo == "placement" else _ranking_row_key(row)
+        if silo == "placement":
+            return _placement_row_key(row)
+        elif silo == "rank_publisher":
+            return _rank_publisher_row_key(row)
+        else:
+            return _ranking_row_key(row)
 
     # Build lookups
     new_lookup = {get_row_key(r): r for r in new_rows if get_row_key(r)}
