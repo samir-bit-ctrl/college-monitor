@@ -1,98 +1,96 @@
 """
-change_detector.py — Compares freshly scraped data against stored snapshots.
-
-Detects:
-  - Value changed in existing row
-  - New row added
-  - Row removed
-  - Rank threshold breach (for ranking table)
+change_detector.py — Compares scraped data against stored snapshots.
+All old_value / new_value fields are human-readable strings, no raw dicts.
 """
 
 from datetime import datetime
 
 
 def _placement_row_key(row: dict) -> str:
-    """Use 'Particulars' column as the unique key for placement rows."""
-    for key in row:
-        if "particular" in key.lower():
-            return row[key]
-    return str(list(row.values())[0]) if row else ""
+    return row.get("Particulars", str(list(row.values())[0]) if row else "")
 
 
 def _ranking_row_key(row: dict) -> str:
-    """Use category + publisher_year as unique key for ranking rows."""
-    return f"{row.get('category', '')}||{row.get('publisher_year', '')}"
+    return row.get("Category", str(list(row.values())[0]) if row else "")
+
+
+def _summarise_row(row: dict, silo: str) -> str:
+    """Turn a row dict into a compact human-readable string."""
+    if silo == "placement":
+        parts = [
+            f"{k.replace('Statistics ', '')}: {v}"
+            for k, v in row.items()
+            if k != "Particulars" and v and k != "rank_value"
+        ]
+        return " | ".join(parts)
+    else:
+        parts = [
+            f"{k}: #{v}"
+            for k, v in row.items()
+            if k not in ("Category", "rank_value") and v
+        ]
+        return " | ".join(parts)
 
 
 def detect_changes(college_name: str,
                    silo: str,
-                   old_snapshot: dict,
-                   new_rows: list[dict],
+                   campus: str = "",
+                   old_snapshot: dict = None,
+                   new_rows: list[dict] = None,
                    rank_threshold: int = 0) -> list[dict]:
-    """
-    Compare new_rows against old_snapshot and return a list of change dicts.
-
-    old_snapshot: dict of { snapshot_key → row_dict }
-    new_rows: list of freshly scraped row dicts
-    rank_threshold: if > 0, alert if rank number changes by more than this value
-    """
+    if old_snapshot is None: old_snapshot = {}
+    if new_rows is None: new_rows = []
     changes = []
-    now = datetime.now().isoformat()
-
-    def make_snap_key(row_key):
-        return f"{college_name}|||{row_key}"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def get_row_key(row):
         return _placement_row_key(row) if silo == "placement" else _ranking_row_key(row)
 
-    # Build lookup of new data
-    new_lookup = {}
-    for row in new_rows:
-        rk = get_row_key(row)
-        if rk:
-            new_lookup[rk] = row
-
-    # Build lookup of old data
+    # Build lookups
+    new_lookup = {get_row_key(r): r for r in new_rows if get_row_key(r)}
     old_lookup = {}
     for snap_key, row_dict in old_snapshot.items():
         if snap_key.startswith(f"{college_name}|||"):
             rk = snap_key.split("|||", 1)[1]
             old_lookup[rk] = row_dict
 
-    # ── Detect: value changes + new rows ──────────────────────────
+    # ── New rows ──────────────────────────────────────────
     for row_key, new_row in new_lookup.items():
         if row_key not in old_lookup:
-            # New row added
             changes.append({
-                "timestamp": now,
+                "timestamp":    now,
                 "college_name": college_name,
-                "silo": silo,
-                "change_type": "row_added",
-                "row_key": row_key,
-                "old_value": "",
-                "new_value": str(new_row)
+                "campus":       campus,
+                "silo":         silo,
+                "change_type":  "row_added",
+                "row_key":      row_key,
+                "old_value":    "—",
+                "new_value":    _summarise_row(new_row, silo)
             })
+
         else:
             old_row = old_lookup[row_key]
-            # Compare each cell value
             all_keys = set(list(new_row.keys()) + list(old_row.keys()))
             for col in all_keys:
-                if col in ("rank_value",):
-                    continue  # internal field, skip
+                if col == "rank_value":
+                    continue
                 old_val = str(old_row.get(col, "")).strip()
                 new_val = str(new_row.get(col, "")).strip()
                 if old_val != new_val:
+                    # Clean column label
+                    col_label = col.replace("Statistics ", "").strip("()")
                     changes.append({
-                        "timestamp": now,
+                        "timestamp":    now,
                         "college_name": college_name,
-                        "silo": silo,
-                        "change_type": "value_changed",
-                        "row_key": row_key,
-                        "old_value": f"{col}: {old_val}",
-                        "new_value": f"{col}: {new_val}"
+                "campus":       campus,
+                        "silo":         silo,
+                        "change_type":  "value_changed",
+                        "row_key":      row_key,
+                        "old_value":    f"{col_label}: {old_val}" if old_val else "—",
+                        "new_value":    f"{col_label}: {new_val}" if new_val else "—"
                     })
 
-            # ── Rank threshold check ─────────────────────────────
+            # ── Rank threshold ────────────────────────────
             if silo == "ranking" and rank_threshold > 0:
                 try:
                     old_rank = int(old_row.get("rank_value", "0") or "0")
@@ -102,55 +100,30 @@ def detect_changes(college_name: str,
                         if delta >= rank_threshold:
                             direction = "improved" if new_rank < old_rank else "dropped"
                             changes.append({
-                                "timestamp": now,
+                                "timestamp":    now,
                                 "college_name": college_name,
-                                "silo": silo,
-                                "change_type": f"rank_threshold_{direction}",
-                                "row_key": row_key,
-                                "old_value": f"#{old_rank}",
-                                "new_value": f"#{new_rank} (Δ{delta})"
+                "campus":       campus,
+                                "silo":         silo,
+                                "change_type":  f"rank_threshold_{direction}",
+                                "row_key":      row_key,
+                                "old_value":    f"#{old_rank}",
+                                "new_value":    f"#{new_rank}  (Δ {delta} places)"
                             })
                 except (ValueError, TypeError):
                     pass
 
-    # ── Detect: removed rows ──────────────────────────────────────
+    # ── Removed rows ──────────────────────────────────────
     for row_key in old_lookup:
         if row_key not in new_lookup:
             changes.append({
-                "timestamp": now,
+                "timestamp":    now,
                 "college_name": college_name,
-                "silo": silo,
-                "change_type": "row_removed",
-                "row_key": row_key,
-                "old_value": str(old_lookup[row_key]),
-                "new_value": ""
+                "campus":       campus,
+                "silo":         silo,
+                "change_type":  "row_removed",
+                "row_key":      row_key,
+                "old_value":    _summarise_row(old_lookup[row_key], silo),
+                "new_value":    "—"
             })
 
     return changes
-
-
-def format_changes_for_alert(changes: list[dict]) -> str:
-    """Format changes into a clean human-readable summary string."""
-    if not changes:
-        return ""
-
-    lines = []
-    for c in changes:
-        ct = c["change_type"]
-        rk = c["row_key"]
-
-        if ct == "row_added":
-            lines.append(f"  ➕ New row added: {rk}")
-            if c["new_value"]:
-                lines.append(f"     {c['new_value']}")
-        elif ct == "row_removed":
-            lines.append(f"  ➖ Row removed: {rk}")
-        elif ct == "value_changed":
-            lines.append(f"  ✏️  Changed [{rk}]")
-            lines.append(f"     Old: {c['old_value']}")
-            lines.append(f"     New: {c['new_value']}")
-        elif ct.startswith("rank_threshold"):
-            direction = "📈 Improved" if "improved" in ct else "📉 Dropped"
-            lines.append(f"  {direction} [{rk}]: {c['old_value']} → {c['new_value']}")
-
-    return "\n".join(lines)

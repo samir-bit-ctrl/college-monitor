@@ -1,20 +1,5 @@
-"""
-main.py — Shiksha College Monitor orchestrator
-
-Run manually:  python main.py
-Run via CI:    triggered by GitHub Actions cron (see .github/workflows/monitor.yml)
-
-Required environment variables:
-  SPREADSHEET_ID           — Google Sheets ID (from the URL)
-  GOOGLE_CREDENTIALS_JSON  — Service account JSON (as a single-line string)
-  TELEGRAM_BOT_TOKEN       — Telegram bot token
-  TELEGRAM_CHAT_ID         — Telegram group/channel chat ID
-  TEAMS_WEBHOOK_URL        — MS Teams incoming webhook URL
-
-Optional:
-  SCRAPE_DELAY_SECONDS     — Delay between colleges (default: 4)
-  SEND_DAILY_SUMMARY       — "true" to always send summary even with no changes (default: true)
-"""
+from dotenv import load_dotenv
+load_dotenv()
 
 import asyncio
 import os
@@ -27,7 +12,7 @@ from sheets_manager import (
     get_active_colleges, load_snapshot, save_snapshot,
     log_changes, update_college_timestamps
 )
-from change_detector import detect_changes, format_changes_for_alert
+from change_detector import detect_changes
 from alerts import (
     send_telegram_alert, send_telegram_summary,
     send_teams_alert, send_teams_summary
@@ -36,10 +21,9 @@ from alerts import (
 
 def main():
     print("=" * 55)
-    print(f"  Shiksha College Monitor — {datetime.now().strftime('%d %b %Y %H:%M')}")
+    print(f"  College Monitor — {datetime.now().strftime('%d %b %Y %H:%M')}")
     print("=" * 55)
 
-    # ── Config ────────────────────────────────────────────
     spreadsheet_id = os.getenv("SPREADSHEET_ID")
     if not spreadsheet_id:
         print("[FATAL] SPREADSHEET_ID not set. Exiting.")
@@ -47,108 +31,110 @@ def main():
 
     send_summary = os.getenv("SEND_DAILY_SUMMARY", "true").lower() == "true"
 
-    # ── Connect to Google Sheets ──────────────────────────
     print("\n[1/4] Connecting to Google Sheets...")
     spreadsheet = open_spreadsheet(spreadsheet_id)
     ensure_sheets(spreadsheet)
     colleges = get_active_colleges(spreadsheet)
 
     if not colleges:
-        print("  No active colleges found in sheet. Add rows to 'colleges' tab.")
+        print("  No active colleges found.")
         sys.exit(0)
 
-    print(f"  Found {len(colleges)} active college(s)")
+    # Skip colleges with no URLs at all
+    valid_colleges = [
+        c for c in colleges
+        if c.get("placement_url", "").strip() or c.get("ranking_url", "").strip()
+    ]
+    skipped = [c["college_name"] for c in colleges if c not in valid_colleges]
+    if skipped:
+        print(f"  Skipped (no URLs): {', '.join(skipped)}")
 
-    # ── Scrape all colleges ───────────────────────────────
-    print(f"\n[2/4] Scraping {len(colleges)} college(s)...")
+    print(f"  Found {len(valid_colleges)} college(s) to scrape")
+
+    # Build configs for scraper
     college_configs = [
         {
-            "name": c["college_name"],
-            "placement_url": c["placement_url"],
-            "ranking_url": c["ranking_url"]
+            "name":          c["college_name"],
+            "campus":        str(c.get("campus", "") or ""),
+            "placement_url": str(c.get("placement_url", "") or "").strip(),
+            "ranking_url":   str(c.get("ranking_url", "") or "").strip(),
         }
-        for c in colleges
+        for c in valid_colleges
     ]
-    scraped_results = asyncio.run(scrape_all_colleges(college_configs))
 
-    # Build rank_threshold lookup
+    # Build threshold lookup keyed by (name, campus)
     threshold_map = {
-        c["college_name"]: int(c.get("rank_threshold") or 0)
-        for c in colleges
+        (c["college_name"], str(c.get("campus","") or "")): int(c.get("rank_threshold") or 0)
+        for c in valid_colleges
     }
 
-    # ── Compare + Detect Changes ──────────────────────────
+    print(f"\n[2/4] Scraping {len(college_configs)} college(s)...")
+    scraped_results = asyncio.run(scrape_all_colleges(college_configs))
+
     print("\n[3/4] Detecting changes...")
-    all_changes = []
+    all_changes  = []
     summary_lines = []
 
+    # Silos to process per college
+    SILOS = [
+        ("placement",      "placement_data"),
+        ("ranking",        "ranking_data"),
+        ("rank_publisher", "rank_publisher_data"),
+    ]
+
     for result in scraped_results:
-        name = result["name"]
-        threshold = threshold_map.get(name, 0)
+        name   = result["name"]
+        campus = result.get("campus", "")
+        threshold = threshold_map.get((name, campus), 0)
 
         if result.get("error"):
-            print(f"  ⚠️  {name}: scrape error — {result['error']}")
-            summary_lines.append(f"⚠️ {name}: scrape error")
+            print(f"  ⚠️  {name} ({campus}): scrape error — {result['error']}")
+            summary_lines.append(f"⚠️ {name} ({campus}): scrape error")
             continue
 
-        college_all_changes = []
+        college_changes = []
 
-        for silo, new_rows in [
-            ("placement", result["placement_data"]),
-            ("ranking", result["ranking_data"])
-        ]:
+        for silo, data_key in SILOS:
+            new_rows = result.get(data_key, [])
             if not new_rows:
-                print(f"  ⚠️  {name} [{silo}]: no data scraped, skipping diff")
-                continue
+                continue  # silo had no URL or no data — skip silently
 
-            # Load existing snapshot
-            old_snapshot = load_snapshot(spreadsheet, silo)
-
-            # Detect changes
+            old_snapshot = load_snapshot(spreadsheet, silo, name, campus)
             changes = detect_changes(
                 college_name=name,
+                campus=campus,
                 silo=silo,
                 old_snapshot=old_snapshot,
                 new_rows=new_rows,
-                rank_threshold=threshold
+                rank_threshold=threshold if silo in ("ranking","rank_publisher") else 0
             )
 
             if changes:
-                print(f"  🔴 {name} [{silo}]: {len(changes)} change(s) detected")
-                college_all_changes.extend(changes)
-
-                # Format and send alerts immediately per college+silo
-                summary = format_changes_for_alert(changes)
-                college_url = (
-                    result.get("placement_url", "") if silo == "placement"
-                    else result.get("ranking_url", "")
+                print(f"  🔴 {name} ({campus}) [{silo}]: {len(changes)} change(s)")
+                college_changes.extend(changes)
+                college_url = result.get(
+                    "placement_url" if silo == "placement" else "ranking_url", ""
                 )
-
-                send_telegram_alert(name, silo, summary, len(changes))
-                send_teams_alert(name, silo, summary, len(changes), college_url)
+                send_telegram_alert(name, silo, changes, len(changes))
+                send_teams_alert(name, silo, changes, len(changes), college_url)
             else:
-                print(f"  ✅ {name} [{silo}]: no changes")
+                print(f"  ✅ {name} ({campus}) [{silo}]: no changes")
 
-            # Always update snapshot with latest data
-            save_snapshot(spreadsheet, silo, name, new_rows)
+            save_snapshot(spreadsheet, silo, name, campus, new_rows)
 
-        # Log all changes for this college
-        has_changes = bool(college_all_changes)
+        has_changes = bool(college_changes)
         if has_changes:
-            log_changes(spreadsheet, college_all_changes)
-            all_changes.extend(college_all_changes)
+            log_changes(spreadsheet, college_changes)
+            all_changes.extend(college_changes)
             summary_lines.append(
-                f"🔴 {name}: {len(college_all_changes)} change(s) across placement + ranking"
+                f"🔴 {name} ({campus}): {len(college_changes)} change(s)"
             )
         else:
-            summary_lines.append(f"✅ {name}: no changes")
+            summary_lines.append(f"✅ {name} ({campus or '—'}): no changes")
 
-        # Update timestamps in colleges sheet
-        update_college_timestamps(spreadsheet, name, has_changes)
+        update_college_timestamps(spreadsheet, name, campus, has_changes)
 
-    # ── Daily Summary ─────────────────────────────────────
-    print(f"\n[4/4] Run complete.")
-    print(f"  Total changes this run: {len(all_changes)}")
+    print(f"\n[4/4] Run complete. Total changes: {len(all_changes)}")
 
     if send_summary:
         send_telegram_summary(summary_lines)
