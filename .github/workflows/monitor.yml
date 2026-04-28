@@ -2,7 +2,7 @@ name: College Monitor
 
 on:
   schedule:
-    - cron: "30 2 * * *"  # 8:00 AM IST daily
+    - cron: "30 2 * * *"
   workflow_dispatch:
 
 jobs:
@@ -31,8 +31,13 @@ jobs:
             libcups2 libxkbcommon0 libatspi2.0-0 libxcomposite1 libxdamage1 \
             libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64
 
-      - name: Install Playwright Chromium (no deps)
+      - name: Install Playwright Chromium
         run: python -m playwright install chromium
+
+      - name: Debug Woxsen page (temporary)
+        env:
+          HEADLESS: "true"
+        run: python debug_headless.py
 
       - name: Run monitor
         env:
