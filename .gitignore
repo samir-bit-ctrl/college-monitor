@@ -3,3 +3,4 @@ credentials.json
 howto
 README.md
 __pycache__
+TEAMS_WEBHOOK_URL= "https://defaultc287ecf03f1e49ada1bc008102318a.48.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/fe4d7fee946b4dfa8ce2f2e2677cc2fb/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=qtZuKREDXGaM2927gpujSfFZwMkMI4hgx_gbbnB16DQ"

@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import asyncio
 import os
 import sys
 from datetime import datetime
@@ -69,7 +68,7 @@ def main():
     }
 
     print(f"\n[2/4] Scraping {len(college_configs)} college(s)...")
-    scraped_results = asyncio.run(scrape_all_colleges(college_configs))
+    scraped_results = scrape_all_colleges(college_configs)
 
     print("\n[3/4] Detecting changes...")
     all_changes  = []
