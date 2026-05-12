@@ -47,33 +47,85 @@ def normalize(val: str) -> str:
 
 
 def parse_placement_table(html: str) -> list[dict]:
+    """
+    Parse placement table. Handles two layouts:
+    1. Simple: Particulars | Statistics (2023) | Statistics (2024) | Statistics (2025)
+    2. Multi-section: separate tables for First Degree / Higher Degree etc.
+    """
     soup = BeautifulSoup(html, "html.parser")
     rows = []
-    target = None
+
+    # Find ALL tables containing placement-like data
+    candidate_tables = []
     for table in soup.find_all("table"):
-        ths = [th.get_text(strip=True) for th in table.find_all("th")]
-        if any("Particulars" in h for h in ths):
-            target = table
-            break
-        if "Students Placed" in table.get_text():
-            target = table
-            break
-    if not target:
+        text = table.get_text()
+        ths  = [th.get_text(strip=True) for th in table.find_all("th")]
+        # Must have Particulars header OR contain placement keywords
+        if (any("Particulars" in h for h in ths) or
+                any(kw in text for kw in ["Students Placed", "Average Salary",
+                                          "Average Package", "Median Salary",
+                                          "Median Package", "Placement Rate",
+                                          "Students Registered"])):
+            # Skip tiny tables (less than 2 rows of data)
+            trs = table.find_all("tr")
+            if len(trs) >= 2:
+                candidate_tables.append(table)
+
+    if not candidate_tables:
         return []
-    headers = [th.get_text(strip=True) for th in target.find_all("th")]
-    if not headers:
-        first_tr = target.find("tr")
-        if first_tr:
-            headers = [td.get_text(strip=True) for td in first_tr.find_all(["td","th"])]
-    print(f"    Placement headers: {headers}")
-    tbody = target.find("tbody")
-    trs = tbody.find_all("tr") if tbody else target.find_all("tr")[1:]
-    for tr in trs:
-        cells = [normalize(td.get_text(strip=True)) for td in tr.find_all(["td","th"])]
-        if not any(cells):
+
+    # Process each candidate table
+    seen_particulars = set()
+    for table in candidate_tables:
+        # Get headers from thead or first tr
+        headers = [th.get_text(strip=True) for th in table.find_all("th")]
+        if not headers:
+            first_tr = table.find("tr")
+            if first_tr:
+                headers = [td.get_text(strip=True)
+                           for td in first_tr.find_all(["td", "th"])]
+
+        if not headers or not any(headers):
             continue
-        row_dict = {headers[i] if i < len(headers) else f"col_{i}": v for i, v in enumerate(cells)}
-        rows.append(row_dict)
+
+        # Normalise headers — map year patterns to Statistics (YYYY)
+        clean_headers = []
+        for h in headers:
+            m = re.search(r"(\d{4})", h)
+            if m and "Particulars" not in h:
+                clean_headers.append(f"Statistics ({m.group(1)})")
+            elif not h:
+                clean_headers.append(h)
+            else:
+                clean_headers.append(h)
+
+        print(f"    Placement headers: {clean_headers}")
+
+        tbody = table.find("tbody")
+        trs = tbody.find_all("tr") if tbody else table.find_all("tr")[1:]
+
+        for tr in trs:
+            cells = [normalize(td.get_text(strip=True))
+                     for td in tr.find_all(["td", "th"])]
+            if not any(cells):
+                continue
+            # Skip rows that are sub-headers (all cells non-numeric and first cell empty)
+            if not cells[0] and not any(re.search(r"\d", c) for c in cells[1:]):
+                continue
+
+            row_dict = {}
+            for i, val in enumerate(cells):
+                key = clean_headers[i] if i < len(clean_headers) else f"col_{i}"
+                row_dict[key] = val
+
+            # Deduplicate by Particulars value
+            particular = row_dict.get("Particulars", cells[0] if cells else "")
+            if particular and particular not in seen_particulars:
+                seen_particulars.add(particular)
+                rows.append(row_dict)
+            elif not particular:
+                rows.append(row_dict)
+
     return rows
 
 
