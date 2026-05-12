@@ -219,8 +219,12 @@ def _build_data_row(row: dict, silo: str, snap_key: str,
 
 
 def _apply_snapshot_formats(ws, row_meta: list[tuple], num_cols: int):
-    """Single batch_format call covering header + all content rows."""
+    """Single batch_format + merge call covering header + all content rows."""
     col = _col(num_cols)
+
+    # Collect merge requests for university + campus label rows
+    merge_requests = []
+
     formats = [{
         "range": f"A1:{col}1",
         "format": {
@@ -229,21 +233,51 @@ def _apply_snapshot_formats(ws, row_meta: list[tuple], num_cols: int):
             "horizontalAlignment": "CENTER"
         }
     }]
+
     for row_idx, row_type in row_meta:
         r = f"A{row_idx}:{col}{row_idx}"
         if row_type == "university":
             formats.append({"range": r, "format": {
                 "backgroundColor": COLLEGE_BG,
-                "textFormat": {"bold": True, "foregroundColor": COLLEGE_FG, "fontSize": 10},
-                "horizontalAlignment": "CENTER"
+                "textFormat": {"bold": True, "foregroundColor": COLLEGE_FG,
+                               "fontSize": 11},
+                "horizontalAlignment": "CENTER",
+                "verticalAlignment": "MIDDLE"
             }})
+            # Merge across all columns
+            merge_requests.append({
+                "mergeCells": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": row_idx - 1,
+                        "endRowIndex": row_idx,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": num_cols
+                    },
+                    "mergeType": "MERGE_ALL"
+                }
+            })
         elif row_type == "campus":
             formats.append({"range": r, "format": {
                 "backgroundColor": CAMPUS_BG,
                 "textFormat": {"bold": True, "foregroundColor": CAMPUS_FG,
                                "fontSize": 9, "italic": True},
-                "horizontalAlignment": "LEFT"
+                "horizontalAlignment": "LEFT",
+                "verticalAlignment": "MIDDLE"
             }})
+            # Merge campus row across all columns too
+            merge_requests.append({
+                "mergeCells": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": row_idx - 1,
+                        "endRowIndex": row_idx,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": num_cols
+                    },
+                    "mergeType": "MERGE_ALL"
+                }
+            })
         elif row_type == "data_even":
             formats.append({"range": r, "format": {
                 "backgroundColor": ALT_ROW_BG,
@@ -254,7 +288,16 @@ def _apply_snapshot_formats(ws, row_meta: list[tuple], num_cols: int):
                 "backgroundColor": WHITE,
                 "textFormat": {"fontSize": 10}
             }})
+
+    # Apply formatting
     _safe(lambda: ws.batch_format(formats))
+
+    # Apply merges via spreadsheet batch_update
+    if merge_requests:
+        try:
+            _safe(lambda: ws.spreadsheet.batch_update({"requests": merge_requests}))
+        except Exception as e:
+            print(f"  [WARN] Merge cells failed (non-critical): {e}")
 
 
 def save_snapshot(spreadsheet, silo: str,
@@ -464,3 +507,48 @@ def update_college_timestamps(spreadsheet, college_name: str,
                 time.sleep(1)
                 _safe(lambda: ws.update_cell(i, headers.index("last_changed") + 1, now))
             break
+
+
+# ─────────────────────────────────────────────
+# COSMETIC FIXES — run once to clean up sheet layout
+# ─────────────────────────────────────────────
+
+def apply_sheet_cosmetics(spreadsheet):
+    """
+    Hide snapshot_key column (col A) on snapshot sheets.
+    Set column widths for readability.
+    """
+    sheet_widths = {
+        SHEET_PLACEMENT_SNAPSHOT: [0, 120, 80, 160, 130, 130, 130, 140],
+        SHEET_RANKING_SNAPSHOT:   [0, 120, 80, 200, 80,  80,  80,  140],
+        SHEET_RANK_PUBLISHER:     [0, 120, 80, 180, 130, 80,  60,  140],
+        SHEET_CHANGE_LOG:         [155, 140, 80, 110, 130, 180, 220, 220],
+    }
+
+    for sheet_name, widths in sheet_widths.items():
+        try:
+            ws = spreadsheet.worksheet(sheet_name)
+            requests = []
+            for i, w in enumerate(widths):
+                if w == 0:
+                    # Hide column
+                    requests.append({"updateDimensionProperties": {
+                        "range": {"sheetId": ws.id, "dimension": "COLUMNS",
+                                  "startIndex": i, "endIndex": i+1},
+                        "properties": {"hiddenByUser": True, "pixelSize": 0},
+                        "fields": "hiddenByUser"
+                    }})
+                else:
+                    requests.append({"updateDimensionProperties": {
+                        "range": {"sheetId": ws.id, "dimension": "COLUMNS",
+                                  "startIndex": i, "endIndex": i+1},
+                        "properties": {"pixelSize": w},
+                        "fields": "pixelSize"
+                    }})
+
+            if requests:
+                _safe(lambda r=requests: spreadsheet.batch_update({"requests": r}))
+                print(f"  Cosmetics applied: {sheet_name}")
+            time.sleep(1)
+        except Exception as e:
+            print(f"  [WARN] Cosmetics failed for {sheet_name}: {e}")

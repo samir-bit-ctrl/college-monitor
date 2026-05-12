@@ -9,7 +9,7 @@ from scraper import scrape_all_colleges
 from sheets_manager import (
     open_spreadsheet, ensure_sheets,
     get_active_colleges, load_snapshot, save_snapshot,
-    log_changes, update_college_timestamps
+    log_changes, update_college_timestamps, apply_sheet_cosmetics
 )
 from change_detector import detect_changes
 from alerts import (
@@ -33,6 +33,7 @@ def main():
     print("\n[1/4] Connecting to Google Sheets...")
     spreadsheet = open_spreadsheet(spreadsheet_id)
     ensure_sheets(spreadsheet)
+    apply_sheet_cosmetics(spreadsheet)
     colleges = get_active_colleges(spreadsheet)
 
     if not colleges:
