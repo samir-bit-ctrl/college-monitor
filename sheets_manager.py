@@ -321,20 +321,25 @@ def save_snapshot(spreadsheet, silo: str,
         for r in all_values[1:]:
             if not r or not any(r):
                 continue
-            if not r[0] or "|||" not in r[0]:
-                continue  # skip label rows
+            # Skip blank separator rows, label rows, header clones
+            if not r[0]:
+                continue
+            if "|||" not in r[0]:
+                continue  # label row or header — skip
             r_key = r[0]
             if r_key.startswith(f"{tag}|||"):
                 continue  # drop current college+campus
-            # Parse college/campus from snapshot_key
+            # Parse college/campus from snapshot_key prefix
             prefix = r_key.split("|||")[0]
             if "(" in prefix and prefix.endswith(")"):
-                c_name  = prefix[:prefix.rfind("(")]
+                c_name   = prefix[:prefix.rfind("(")]
                 c_campus = prefix[prefix.rfind("(")+1:-1]
             else:
                 c_name   = prefix
                 c_campus = ""
-            kept.setdefault((c_name, c_campus), []).append(r)
+            # Only keep if all data columns are present (skip corrupted rows)
+            if len(r) >= 3 and r[1]:  # must have college_name in col B
+                kept.setdefault((c_name, c_campus), []).append(r)
 
     # ── Build new rows for this college+campus ────────────
     new_rows = []

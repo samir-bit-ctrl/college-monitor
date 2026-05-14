@@ -48,9 +48,9 @@ def normalize(val: str) -> str:
 
 def parse_placement_table(html: str) -> list[dict]:
     """
-    Parse ONLY the primary placement stats table:
-    Particulars | Statistics (2023) | Statistics (2024) | Statistics (2025)
-    Picks the table whose first th is exactly "Particulars".
+    Parse ONLY the table with headers:
+      Particulars | Statistics (2023) | Statistics (2024) | Statistics (2025)
+    Strictly: first th == "Particulars" AND 2+ "Statistics (YYYY)" columns.
     """
     soup = BeautifulSoup(html, "html.parser")
     rows = []
@@ -58,18 +58,13 @@ def parse_placement_table(html: str) -> list[dict]:
 
     for table in soup.find_all("table"):
         ths = [th.get_text(strip=True) for th in table.find_all("th")]
-        # Must start with "Particulars" and have year-based stat columns
-        if ths and ths[0] == "Particulars" and any("Statistics" in h for h in ths):
-            target = table
-            break
-
-    if not target:
-        # Fallback: any table with Particulars th
-        for table in soup.find_all("table"):
-            ths = [th.get_text(strip=True) for th in table.find_all("th")]
-            if any(h == "Particulars" for h in ths):
-                target = table
-                break
+        if not ths or ths[0] != "Particulars":
+            continue
+        stat_cols = [h for h in ths if re.match(r"^Statistics\s*\(\d{4}\)$", h)]
+        if len(stat_cols) < 2:
+            continue
+        target = table
+        break
 
     if not target:
         return []
